@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
 import yaml
 import json
 import smtplib
@@ -17,6 +18,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
+
+LOGS_FILE = "logs.json"
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(page_title="MusicNet Excel Merger", page_icon="🎵", layout="wide")
@@ -137,7 +140,7 @@ authenticator = stauth.Authenticate(
 
 # ── Helper: read logs ────────────────────────────────────────
 def read_logs():
-    # Try GitHub first
+    # 1. Try GitHub first (most persistent — survives redeploys)
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
@@ -148,7 +151,16 @@ def read_logs():
                 return json.loads(base64.b64decode(r.json()["content"]).decode())
     except Exception:
         pass
-    # Fallback: session state logs (current session only)
+    # 2. Try local file (persists between browser sessions while app is running)
+    try:
+        if os.path.exists(LOGS_FILE):
+            with open(LOGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and data:
+                    return data
+    except Exception:
+        pass
+    # 3. Fallback: in-memory session state (current session only)
     return st.session_state.get("session_logs", [])
 
 # ── Helper: write log entry ──────────────────────────────────
@@ -159,12 +171,27 @@ def write_log(action, details, user=None):
         "action":    action,
         "details":   details
     }
-    # Always save to session state (works without token)
+    # Layer 1: always save to session state
     if "session_logs" not in st.session_state:
         st.session_state["session_logs"] = []
     st.session_state["session_logs"].insert(0, entry)
 
-    # Also try to persist to GitHub
+    # Layer 2: write to local file (persists between sessions while app is awake)
+    try:
+        logs = []
+        if os.path.exists(LOGS_FILE):
+            with open(LOGS_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+        if not isinstance(logs, list):
+            logs = []
+        logs.insert(0, entry)
+        logs = logs[:500]
+        with open(LOGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Layer 3: also persist to GitHub (survives redeploys — requires GITHUB_TOKEN)
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
