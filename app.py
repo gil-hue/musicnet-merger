@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import io
 import yaml
+import json
 import smtplib
 import string
 import secrets as secrets_module
 import requests
 import base64
 import bcrypt
-from datetime import date
+from datetime import datetime, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from openpyxl import Workbook
@@ -121,6 +122,53 @@ authenticator = stauth.Authenticate(
     config["cookie"]["expiry_days"],
 )
 
+# ── Helper: read logs from GitHub ────────────────────────────
+def read_logs():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
+        if not token:
+            return []
+        url     = f"https://api.github.com/repos/{repo}/contents/logs.json"
+        headers = {"Authorization": f"token {token}"}
+        r       = requests.get(url, headers=headers)
+        if r.status_code == 200:
+            content = base64.b64decode(r.json()["content"]).decode()
+            return json.loads(content)
+    except Exception:
+        pass
+    return []
+
+# ── Helper: write log entry to GitHub ────────────────────────
+def write_log(action, details, user=None):
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
+        if not token:
+            return
+        url     = f"https://api.github.com/repos/{repo}/contents/logs.json"
+        headers = {"Authorization": f"token {token}"}
+        r       = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            return
+        sha      = r.json()["sha"]
+        logs     = json.loads(base64.b64decode(r.json()["content"]).decode())
+        logs.insert(0, {
+            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "user":      user or st.session_state.get("username", "—"),
+            "action":    action,
+            "details":   details
+        })
+        logs = logs[:500]  # keep last 500 entries
+        content = base64.b64encode(json.dumps(logs, ensure_ascii=False, indent=2).encode()).decode()
+        requests.put(url, headers=headers, json={
+            "message": f"Log: {action}",
+            "content": content,
+            "sha":     sha
+        })
+    except Exception:
+        pass
+
 # ── Helper: update config.yaml on GitHub ─────────────────────
 def update_config_github(new_config):
     try:
@@ -232,7 +280,7 @@ st.markdown("""
 
 # ── Tabs (admin sees extra tab) ───────────────────────────────
 if is_admin:
-    tab_main, tab_admin = st.tabs(["🎵 מיזוג קבצים", "👥 ניהול משתמשים"])
+    tab_main, tab_admin, tab_log = st.tabs(["🎵 מיזוג קבצים", "👥 ניהול משתמשים", "📋 לוג פעולות"])
 else:
     tab_main = st.tabs(["🎵 מיזוג קבצים"])[0]
     tab_admin = None
@@ -240,6 +288,47 @@ else:
 # ══════════════════════════════════════════════════════════════
 #  ADMIN TAB
 # ══════════════════════════════════════════════════════════════
+if is_admin and tab_log:
+    with tab_log:
+        st.markdown('<div class="section-header">📋 לוג פעולות</div>', unsafe_allow_html=True)
+        col_r, col_f = st.columns([1, 3])
+        with col_r:
+            if st.button("🔄 רענן לוג", key="refresh_log"):
+                st.rerun()
+        with col_f:
+            filter_action = st.selectbox("סנן לפי פעולה", ["הכל", "העלאת קבצים", "יצירת קובץ ממוזג", "הורדת קובץ"], key="log_filter")
+
+        logs = read_logs()
+        if logs:
+            if filter_action != "הכל":
+                logs = [l for l in logs if l.get("action") == filter_action]
+            if logs:
+                action_icons = {
+                    "העלאת קבצים":      "📂",
+                    "יצירת קובץ ממוזג": "⚙️",
+                    "הורדת קובץ":       "⬇️",
+                }
+                df_log = pd.DataFrame([{
+                    "🕐 תאריך ושעה": l.get("timestamp",""),
+                    "👤 משתמש":       l.get("user",""),
+                    "פעולה":          action_icons.get(l.get("action",""), "•") + " " + l.get("action",""),
+                    "📝 פרטים":       l.get("details","")
+                } for l in logs])
+                st.dataframe(df_log, use_container_width=True, hide_index=True)
+                st.markdown(f"**סה\"כ: {len(logs)} פעולות**")
+
+                buf = io.BytesIO()
+                df_log.to_excel(buf, index=False)
+                buf.seek(0)
+                st.download_button("⬇️ ייצא לוג ל-Excel", data=buf.read(),
+                                   file_name=f"MusicNet_Log_{date.today()}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            else:
+                st.info("אין פעולות מסוג זה בלוג")
+        else:
+            st.info("הלוג ריק — פעולות יופיעו כאן לאחר שימוש באפליקציה")
+            st.caption("💡 הלוג מצריך הגדרת GITHUB_TOKEN ב-Secrets")
+
 if is_admin and tab_admin:
     with tab_admin:
         st.markdown('<div class="section-header">👥 ניהול משתמשים</div>', unsafe_allow_html=True)
@@ -411,6 +500,10 @@ with tab_main:
                 all_columns.update(df.columns.tolist())
             except Exception as e:
                 st.error(f"שגיאה בקריאת {f.name}: {e}")
+        if file_data and not st.session_state.get(f"logged_upload_{list(file_data.keys())}"):
+            total_rows = sum(len(d) for d in file_data.values())
+            write_log("העלאת קבצים", f"{len(file_data)} קבצים | {total_rows:,} רשומות: {', '.join(file_data.keys())}")
+            st.session_state[f"logged_upload_{list(file_data.keys())}"] = True
         all_columns = sorted(all_columns)
 
         total_recs = sum(len(d) for d in file_data.values())
@@ -447,11 +540,13 @@ with tab_main:
                     out_name = f"MusicNet_Merged_{today}.xlsx"
                     excel_bytes = build_excel(summary_data, merged, col_headers)
 
+                write_log("יצירת קובץ ממוזג", f"{out_name} | {len(merged):,} רשומות מ-{len(file_data)} קבצים")
                 st.markdown(f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>סה"כ רשומות: <strong>{len(merged):,}</strong> | עמודות: <strong>{len(merged.columns)}</strong></div>', unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.download_button(label="⬇️ הורד את הקובץ המאוחד", data=excel_bytes,
+                if st.download_button(label="⬇️ הורד את הקובץ המאוחד", data=excel_bytes,
                                    file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   use_container_width=True)
+                                   use_container_width=True):
+                    write_log("הורדת קובץ", f"{out_name} | {len(merged):,} רשומות")
                 with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
                     st.dataframe(merged.head(20), use_container_width=True, hide_index=True)
         else:
