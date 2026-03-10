@@ -85,6 +85,19 @@ div[data-testid="stForm"] button[kind="primaryFormSubmit"] {
     font-weight: 600; width: 100%;
 }
 .stButton > button:hover { opacity: 0.9; }
+/* Compact secondary/pagination buttons */
+.stButton > button[kind="secondary"] {
+    background: #f0f4fa !important;
+    color: #1F3864 !important;
+    border: 1px solid #c8d8ed !important;
+    font-size: 0.88rem !important;
+    font-weight: 500 !important;
+    padding: 0.3rem 0.5rem !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background: #dce8f5 !important;
+    border-color: #2E75B6 !important;
+}
 .success-box {
     background: #e8f5e9; border-left: 4px solid #43a047;
     padding: 1rem 1.2rem; border-radius: 8px;
@@ -316,9 +329,46 @@ if is_admin and tab_log:
                     "פעולה":          action_icons.get(l.get("action",""), "•") + " " + l.get("action",""),
                     "📝 פרטים":       l.get("details","")
                 } for l in logs])
-                st.dataframe(df_log, use_container_width=True, hide_index=True)
-                st.markdown(f"**סה\"כ: {len(logs)} פעולות**")
+                # ── Pagination ──────────────────────────────────────
+                ITEMS_PER_PAGE = 20
+                total_pages    = max(1, (len(df_log) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+                if st.session_state.get("_last_log_filter") != filter_action:
+                    st.session_state["log_page"]         = 0
+                    st.session_state["_last_log_filter"] = filter_action
+                if "log_page" not in st.session_state:
+                    st.session_state["log_page"] = 0
+                page = min(st.session_state["log_page"], total_pages - 1)
+                st.session_state["log_page"] = page
+                start   = page * ITEMS_PER_PAGE
+                df_page = df_log.iloc[start : start + ITEMS_PER_PAGE]
 
+                st.dataframe(df_page, use_container_width=True, hide_index=True)
+                st.caption(f"סה\"כ: {len(df_log)} פעולות | עמוד {page + 1} מתוך {total_pages}")
+
+                if total_pages > 1:
+                    half    = 2
+                    p_start = max(0, page - half)
+                    p_end   = min(total_pages, p_start + 5)
+                    if p_end - p_start < 5:
+                        p_start = max(0, p_end - 5)
+                    page_range = list(range(p_start, p_end))
+                    pcols = st.columns([0.5] + [0.3] * len(page_range) + [0.5], gap="small")
+                    with pcols[0]:
+                        if st.button("‹", key="pg_prev", disabled=(page == 0), type="secondary"):
+                            st.session_state["log_page"] = page - 1
+                            st.rerun()
+                    for i, pg in enumerate(page_range):
+                        with pcols[i + 1]:
+                            b_type = "primary" if pg == page else "secondary"
+                            if st.button(str(pg + 1), key=f"pg_{pg}", type=b_type):
+                                st.session_state["log_page"] = pg
+                                st.rerun()
+                    with pcols[-1]:
+                        if st.button("›", key="pg_next", disabled=(page == total_pages - 1), type="secondary"):
+                            st.session_state["log_page"] = page + 1
+                            st.rerun()
+
+                st.markdown("---")
                 buf = io.BytesIO()
                 df_log.to_excel(buf, index=False)
                 buf.seek(0)
@@ -537,7 +587,7 @@ with tab_main:
             st.markdown('<div class="section-header">⚙️ שלב 3 — עיבוד ויצוא</div>', unsafe_allow_html=True)
             col_headers = {'album_name':'שם אלבום','artist_name':'שם אמן','track_name':'שם שיר','track_uri':'Track URI','label':'לייבל'}
 
-            if st.button("🚀 עבד וצור קובץ מאוחד"):
+            if st.button("🚀 עבד וצור קובץ מאוחד", use_container_width=True):
                 with st.spinner("מעבד קבצים..."):
                     summary_data = []
                     dfs = []
@@ -547,19 +597,37 @@ with tab_main:
                         dfs.append(df[existing])
                         summary_data.append((fname, len(df)))
                         if missing: st.warning(f"⚠️ {fname}: עמודות חסרות — {missing}")
-                    merged   = pd.concat(dfs, ignore_index=True)
-                    today    = date.today().strftime("%Y-%m-%d")
-                    out_name = f"MusicNet_Merged_{today}.xlsx"
+                    merged      = pd.concat(dfs, ignore_index=True)
+                    today       = date.today().strftime("%Y-%m-%d")
+                    out_name    = f"MusicNet_Merged_{today}.xlsx"
                     excel_bytes = build_excel(summary_data, merged, col_headers)
-
+                st.session_state["excel_result"] = {
+                    "bytes":   excel_bytes,
+                    "name":    out_name,
+                    "count":   len(merged),
+                    "cols":    len(merged.columns),
+                    "files":   len(file_data),
+                    "preview": merged.head(20).to_dict("records"),
+                }
                 write_log("יצירת קובץ ממוזג", f"{out_name} | {len(merged):,} רשומות מ-{len(file_data)} קבצים")
-                st.markdown(f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>סה"כ רשומות: <strong>{len(merged):,}</strong> | עמודות: <strong>{len(merged.columns)}</strong></div>', unsafe_allow_html=True)
+
+            # ── Results panel (persists across tab switches) ──────
+            if "excel_result" in st.session_state:
+                er = st.session_state["excel_result"]
+                st.markdown(
+                    f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>'
+                    f'סה"כ רשומות: <strong>{er["count"]:,}</strong> | עמודות: <strong>{er["cols"]}</strong></div>',
+                    unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.download_button(label="⬇️ הורד את הקובץ המאוחד", data=excel_bytes,
-                                   file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   use_container_width=True):
-                    write_log("הורדת קובץ", f"{out_name} | {len(merged):,} רשומות")
+                if st.download_button(
+                    label="⬇️ הורד את הקובץ המאוחד",
+                    data=er["bytes"],
+                    file_name=er["name"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                ):
+                    write_log("הורדת קובץ", f"{er['name']} | {er['count']:,} רשומות")
                 with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
-                    st.dataframe(merged.head(20), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(er["preview"]), use_container_width=True, hide_index=True)
         else:
             st.warning("⚠️ יש לבחור לפחות עמודה אחת.")
