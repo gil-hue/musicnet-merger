@@ -219,13 +219,117 @@ col_u, col_lo = st.columns([9, 1])
 with col_lo:
     authenticator.logout("התנתק")
 
-# ── CSS + Header ──────────────────────────────────────────────
+# ── Header ────────────────────────────────────────────────────
+current_user = st.session_state.get("username", "")
+is_admin     = config["credentials"]["usernames"].get(current_user, {}).get("role") == "admin"
+
 st.markdown("""
 <div class="title-bar">
     <h1>🎵 MusicNet Excel Merger</h1>
     <p>העלה קבצי Excel, בחר עמודות, וקבל קובץ מאוחד להורדה</p>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Tabs (admin sees extra tab) ───────────────────────────────
+if is_admin:
+    tab_main, tab_admin = st.tabs(["🎵 מיזוג קבצים", "👥 ניהול משתמשים"])
+else:
+    tab_main = st.tabs(["🎵 מיזוג קבצים"])[0]
+    tab_admin = None
+
+# ══════════════════════════════════════════════════════════════
+#  ADMIN TAB
+# ══════════════════════════════════════════════════════════════
+if is_admin and tab_admin:
+    with tab_admin:
+        st.markdown('<div class="section-header">👥 ניהול משתמשים</div>', unsafe_allow_html=True)
+        users = config["credentials"]["usernames"]
+
+        # ── Users table ───────────────────────────────────────
+        rows = [{"📧 אימייל / שם משתמש": u,
+                 "👤 שם": d.get("name",""),
+                 "🔑 תפקיד": "👑 אדמין" if d.get("role")=="admin" else "👤 משתמש"}
+                for u, d in users.items()]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.markdown(f"**סה\"כ: {len(users)} משתמשים**")
+        st.markdown("---")
+
+        # ── Add user ──────────────────────────────────────────
+        st.markdown("#### ➕ הוספת משתמש חדש")
+        c1, c2 = st.columns(2)
+        with c1:
+            new_email = st.text_input("אימייל", key="nu_email", placeholder="user@example.com")
+            new_name  = st.text_input("שם מלא", key="nu_name",  placeholder="ישראל ישראלי")
+        with c2:
+            new_pass  = st.text_input("סיסמה", key="nu_pass", type="password", placeholder="לפחות 6 תווים")
+            new_role  = st.selectbox("תפקיד", ["user", "admin"], key="nu_role",
+                                     format_func=lambda x: "👑 אדמין" if x=="admin" else "👤 משתמש")
+        if st.button("➕ הוסף משתמש", key="btn_add"):
+            if not new_email or not new_pass or not new_name:
+                st.error("יש למלא את כל השדות")
+            elif new_email in users:
+                st.error("המשתמש כבר קיים במערכת")
+            elif len(new_pass) < 6:
+                st.error("הסיסמה חייבת להכיל לפחות 6 תווים")
+            else:
+                hashed = bcrypt.hashpw(new_pass.encode(), bcrypt.gensalt()).decode()
+                config["credentials"]["usernames"][new_email] = {
+                    "email": new_email, "name": new_name,
+                    "password": hashed, "role": new_role
+                }
+                if update_config_github(config):
+                    st.success(f"✅ המשתמש {new_email} נוסף בהצלחה!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ המשתמש נוסף אך לא נשמר — הגדר GITHUB_TOKEN ב-Secrets")
+
+        st.markdown("---")
+
+        # ── Reset password ────────────────────────────────────
+        st.markdown("#### 🔄 איפוס סיסמה למשתמש")
+        other_users = [u for u in users if u != current_user]
+        if other_users:
+            reset_user = st.selectbox("בחר משתמש", other_users, key="reset_user")
+            c1, c2 = st.columns(2)
+            with c1:
+                manual_pass = st.text_input("סיסמה חדשה (השאר ריק לסיסמה אוטומטית)",
+                                            key="reset_pass", type="password")
+            with c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🔄 אפס סיסמה", key="btn_reset"):
+                    alphabet = string.ascii_letters + string.digits
+                    new_p    = manual_pass if manual_pass else ''.join(secrets_module.choice(alphabet) for _ in range(10))
+                    hashed   = bcrypt.hashpw(new_p.encode(), bcrypt.gensalt()).decode()
+                    config["credentials"]["usernames"][reset_user]["password"] = hashed
+                    github_ok = update_config_github(config)
+                    email_ok  = send_reset_email(users[reset_user].get("email",""), new_p, reset_user)
+                    if email_ok:
+                        st.success(f"✅ סיסמה חדשה נשלחה לאימייל של {reset_user}")
+                    else:
+                        st.info(f"✅ הסיסמה החדשה: **`{new_p}`** — שלח למשתמש ידנית")
+        else:
+            st.info("אין משתמשים נוספים במערכת")
+
+        st.markdown("---")
+
+        # ── Delete user ───────────────────────────────────────
+        st.markdown("#### 🗑️ מחיקת משתמש")
+        if other_users:
+            del_user = st.selectbox("בחר משתמש למחיקה", other_users, key="del_user")
+            if st.button("🗑️ מחק משתמש", key="btn_del", type="primary"):
+                if st.session_state.get("confirm_del") != del_user:
+                    st.session_state["confirm_del"] = del_user
+                    st.warning(f"⚠️ לחץ שוב לאישור מחיקת **{del_user}**")
+                else:
+                    del config["credentials"]["usernames"][del_user]
+                    st.session_state.pop("confirm_del", None)
+                    if update_config_github(config):
+                        st.success(f"✅ המשתמש {del_user} נמחק")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ נמחק מקומית אך לא נשמר — הגדר GITHUB_TOKEN")
+        else:
+            st.info("אין משתמשים נוספים למחיקה")
 
 # ── Helper: build Excel ───────────────────────────────────────
 def build_excel(summary_data, merged_df, col_headers):
@@ -289,67 +393,66 @@ def build_excel(summary_data, merged_df, col_headers):
     return buf.read()
 
 # ══════════════════════════════════════════════════════════════
-#  MAIN UI
+#  MAIN UI (tab)
 # ══════════════════════════════════════════════════════════════
+with tab_main:
+    st.markdown('<div class="section-header">📂 שלב 1 — העלאת קבצים</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("גרור קבצי Excel לכאן", type=["xlsx","xls"],
+                                 accept_multiple_files=True, label_visibility="collapsed")
+    if not uploaded:
+        st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
+    else:
+        file_data   = {}
+        all_columns = set()
+        for f in uploaded:
+            try:
+                df = pd.read_excel(f)
+                file_data[f.name] = df
+                all_columns.update(df.columns.tolist())
+            except Exception as e:
+                st.error(f"שגיאה בקריאת {f.name}: {e}")
+        all_columns = sorted(all_columns)
 
-st.markdown('<div class="section-header">📂 שלב 1 — העלאת קבצים</div>', unsafe_allow_html=True)
-uploaded = st.file_uploader("גרור קבצי Excel לכאן", type=["xlsx","xls"],
-                             accept_multiple_files=True, label_visibility="collapsed")
-if not uploaded:
-    st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
-    st.stop()
+        total_recs = sum(len(d) for d in file_data.values())
+        c1, c2, c3 = st.columns(3)
+        with c1: st.markdown(f'<div class="metric-card"><div class="num">{len(file_data)}</div><div class="lbl">קבצים הועלו</div></div>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="metric-card"><div class="num">{total_recs:,}</div><div class="lbl">רשומות סה"כ</div></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="metric-card"><div class="num">{len(all_columns)}</div><div class="lbl">עמודות נמצאו</div></div>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
 
-file_data   = {}
-all_columns = set()
-for f in uploaded:
-    try:
-        df = pd.read_excel(f)
-        file_data[f.name] = df
-        all_columns.update(df.columns.tolist())
-    except Exception as e:
-        st.error(f"שגיאה בקריאת {f.name}: {e}")
-all_columns = sorted(all_columns)
+        with st.expander("📋 פירוט רשומות לפי קובץ", expanded=True):
+            rows = [{"📄 שם קובץ": name, "📊 רשומות": f"{len(df):,}", "📑 עמודות": len(df.columns)} for name, df in file_data.items()]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-total_recs = sum(len(d) for d in file_data.values())
-c1, c2, c3 = st.columns(3)
-with c1: st.markdown(f'<div class="metric-card"><div class="num">{len(file_data)}</div><div class="lbl">קבצים הועלו</div></div>', unsafe_allow_html=True)
-with c2: st.markdown(f'<div class="metric-card"><div class="num">{total_recs:,}</div><div class="lbl">רשומות סה"כ</div></div>', unsafe_allow_html=True)
-with c3: st.markdown(f'<div class="metric-card"><div class="num">{len(all_columns)}</div><div class="lbl">עמודות נמצאו</div></div>', unsafe_allow_html=True)
-st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">🔧 שלב 2 — בחירת עמודות לשמור</div>', unsafe_allow_html=True)
+        default_cols  = [c for c in ['album_name','artist_name','track_name','track_uri','label'] if c in all_columns]
+        selected_cols = st.multiselect("בחר את העמודות שברצונך לשמור:", options=all_columns, default=default_cols)
 
-with st.expander("📋 פירוט רשומות לפי קובץ", expanded=True):
-    rows = [{"📄 שם קובץ": name, "📊 רשומות": f"{len(df):,}", "📑 עמודות": len(df.columns)} for name, df in file_data.items()]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if selected_cols:
+            st.markdown('<div class="section-header">⚙️ שלב 3 — עיבוד ויצוא</div>', unsafe_allow_html=True)
+            col_headers = {'album_name':'שם אלבום','artist_name':'שם אמן','track_name':'שם שיר','track_uri':'Track URI','label':'לייבל'}
 
-st.markdown('<div class="section-header">🔧 שלב 2 — בחירת עמודות לשמור</div>', unsafe_allow_html=True)
-default_cols = [c for c in ['album_name','artist_name','track_name','track_uri','label'] if c in all_columns]
-selected_cols = st.multiselect("בחר את העמודות שברצונך לשמור:", options=all_columns, default=default_cols)
-if not selected_cols:
-    st.warning("⚠️ יש לבחור לפחות עמודה אחת.")
-    st.stop()
+            if st.button("🚀 עבד וצור קובץ מאוחד"):
+                with st.spinner("מעבד קבצים..."):
+                    summary_data = []
+                    dfs = []
+                    for fname, df in file_data.items():
+                        existing = [c for c in selected_cols if c in df.columns]
+                        missing  = [c for c in selected_cols if c not in df.columns]
+                        dfs.append(df[existing])
+                        summary_data.append((fname, len(df)))
+                        if missing: st.warning(f"⚠️ {fname}: עמודות חסרות — {missing}")
+                    merged   = pd.concat(dfs, ignore_index=True)
+                    today    = date.today().strftime("%Y-%m-%d")
+                    out_name = f"MusicNet_Merged_{today}.xlsx"
+                    excel_bytes = build_excel(summary_data, merged, col_headers)
 
-st.markdown('<div class="section-header">⚙️ שלב 3 — עיבוד ויצוא</div>', unsafe_allow_html=True)
-col_headers = {'album_name':'שם אלבום','artist_name':'שם אמן','track_name':'שם שיר','track_uri':'Track URI','label':'לייבל'}
-
-if st.button("🚀 עבד וצור קובץ מאוחד"):
-    with st.spinner("מעבד קבצים..."):
-        summary_data = []
-        dfs = []
-        for fname, df in file_data.items():
-            existing = [c for c in selected_cols if c in df.columns]
-            missing  = [c for c in selected_cols if c not in df.columns]
-            dfs.append(df[existing])
-            summary_data.append((fname, len(df)))
-            if missing: st.warning(f"⚠️ {fname}: עמודות חסרות — {missing}")
-        merged   = pd.concat(dfs, ignore_index=True)
-        today    = date.today().strftime("%Y-%m-%d")
-        out_name = f"MusicNet_Merged_{today}.xlsx"
-        excel_bytes = build_excel(summary_data, merged, col_headers)
-
-    st.markdown(f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>סה"כ רשומות: <strong>{len(merged):,}</strong> | עמודות: <strong>{len(merged.columns)}</strong></div>', unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.download_button(label="⬇️ הורד את הקובץ המאוחד", data=excel_bytes,
-                       file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       use_container_width=True)
-    with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
-        st.dataframe(merged.head(20), use_container_width=True, hide_index=True)
+                st.markdown(f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>סה"כ רשומות: <strong>{len(merged):,}</strong> | עמודות: <strong>{len(merged.columns)}</strong></div>', unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.download_button(label="⬇️ הורד את הקובץ המאוחד", data=excel_bytes,
+                                   file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   use_container_width=True)
+                with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
+                    st.dataframe(merged.head(20), use_container_width=True, hide_index=True)
+        else:
+            st.warning("⚠️ יש לבחור לפחות עמודה אחת.")
