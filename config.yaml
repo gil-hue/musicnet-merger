@@ -3,7 +3,7 @@ credentials:
     "gil@zed66.com":
       email: gil@zed66.com
       name: Gil Admin
-      password: "$2b$12$MqZv7SeZj37E9gAqW3q49eOhWU85HxGr3YBhF3EEFdqV4o2rQiBR2"
+      password: "$2b$12$IvIIEFFytxyg.IpbD6KoDuLkNNhuJwGmMIc4PIVabTxHmQ8kGV8X2"
       role: admin
     "gil@greenseo.co.il":
       email: gil@greenseo.co.il
