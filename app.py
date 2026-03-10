@@ -19,7 +19,62 @@ from openpyxl.utils import get_column_letter
 import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 
-LOGS_FILE = "logs.json"
+LOGS_FILE    = "logs.json"
+UPLOADS_DIR  = "uploads"
+REGISTRY_FILE = os.path.join(UPLOADS_DIR, "registry.json")
+
+# ── File-library helpers ───────────────────────────────────────
+def ensure_uploads_dir():
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+def load_registry():
+    ensure_uploads_dir()
+    try:
+        if os.path.exists(REGISTRY_FILE):
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        pass
+    return {}
+
+def save_registry(registry):
+    ensure_uploads_dir()
+    try:
+        with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
+            json.dump(registry, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def save_to_library(filename, df, user):
+    """Save an uploaded DataFrame to the library (CSV + registry entry)."""
+    ensure_uploads_dir()
+    safe_name = filename.replace("/", "_").replace("\\", "_")
+    csv_path  = os.path.join(UPLOADS_DIR, safe_name + ".csv")
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    registry = load_registry()
+    registry[filename] = {
+        "upload_date":  datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "upload_user":  user,
+        "record_count": len(df),
+        "columns":      df.columns.tolist(),
+        "safe_name":    safe_name,
+    }
+    save_registry(registry)
+
+def load_from_library(filename, registry):
+    """Load a DataFrame from library by original filename."""
+    ensure_uploads_dir()
+    safe_name = registry.get(filename, {}).get("safe_name",
+                    filename.replace("/", "_").replace("\\", "_"))
+    csv_path  = os.path.join(UPLOADS_DIR, safe_name + ".csv")
+    if os.path.exists(csv_path):
+        try:
+            return pd.read_csv(csv_path, encoding="utf-8-sig")
+        except Exception:
+            return None
+    return None
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(page_title="MusicNet Excel Merger", page_icon="🎵", layout="wide")
@@ -564,97 +619,157 @@ def build_excel(summary_data, merged_df, col_headers):
 #  MAIN UI (tab)
 # ══════════════════════════════════════════════════════════════
 with tab_main:
-    st.markdown('<div class="section-header">📂 שלב 1 — העלאת קבצים</div>', unsafe_allow_html=True)
+    ensure_uploads_dir()
+
+    # ── Step 1: Upload new files → auto-saved to library ─────
+    st.markdown('<div class="section-header">📤 שלב 1 — העלאת קבצים חדשים לספרייה</div>',
+                unsafe_allow_html=True)
     uploaded = st.file_uploader("גרור קבצי Excel לכאן", type=["xlsx","xls"],
                                  accept_multiple_files=True, label_visibility="collapsed")
-
-    # Save to session_state when files are uploaded
     if uploaded:
-        file_data   = {}
-        all_columns = set()
+        newly_saved = []
         for f in uploaded:
             try:
                 df = pd.read_excel(f)
-                file_data[f.name] = df
-                all_columns.update(df.columns.tolist())
+                save_to_library(f.name, df, current_user)
+                newly_saved.append((f.name, len(df)))
             except Exception as e:
                 st.error(f"שגיאה בקריאת {f.name}: {e}")
-        st.session_state["file_data"]   = file_data
-        st.session_state["all_columns"] = sorted(all_columns)
-        log_key = f"logged_upload_{sorted(file_data.keys())}"
-        if file_data and not st.session_state.get(log_key):
-            total_rows = sum(len(d) for d in file_data.values())
-            write_log("העלאת קבצים", f"{len(file_data)} קבצים | {total_rows:,} רשומות: {', '.join(file_data.keys())}")
-            st.session_state[log_key] = True
+        if newly_saved:
+            total_new = sum(c for _, c in newly_saved)
+            write_log("העלאת קבצים",
+                      f"{len(newly_saved)} קבצים | {total_new:,} רשומות: "
+                      f"{', '.join(n for n, _ in newly_saved)}")
+            st.session_state.pop("excel_result", None)   # clear stale result
+            st.success(f"✅ {len(newly_saved)} קבצים נשמרו לספרייה")
 
-    # Load from session_state (persists across tab switches)
-    file_data   = st.session_state.get("file_data",   {})
-    all_columns = st.session_state.get("all_columns", [])
+    # ── Step 2: File library with checkboxes ─────────────────
+    registry = load_registry()
 
-    if not file_data:
+    if not registry:
         st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
     else:
-
-        total_recs = sum(len(d) for d in file_data.values())
-        c1, c2, c3 = st.columns(3)
-        with c1: st.markdown(f'<div class="metric-card"><div class="num">{len(file_data)}</div><div class="lbl">קבצים הועלו</div></div>', unsafe_allow_html=True)
-        with c2: st.markdown(f'<div class="metric-card"><div class="num">{total_recs:,}</div><div class="lbl">רשומות סה"כ</div></div>', unsafe_allow_html=True)
-        with c3: st.markdown(f'<div class="metric-card"><div class="num">{len(all_columns)}</div><div class="lbl">עמודות נמצאו</div></div>', unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        with st.expander("📋 פירוט רשומות לפי קובץ", expanded=True):
-            rows = [{"📄 שם קובץ": name, "📊 רשומות": f"{len(df):,}", "📑 עמודות": len(df.columns)} for name, df in file_data.items()]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-        st.markdown('<div class="section-header">🔧 שלב 2 — בחירת עמודות לשמור</div>', unsafe_allow_html=True)
-        default_cols  = [c for c in ['album_name','artist_name','track_name','track_uri','label'] if c in all_columns]
-        selected_cols = st.multiselect("בחר את העמודות שברצונך לשמור:", options=all_columns, default=default_cols)
-
-        if selected_cols:
-            st.markdown('<div class="section-header">⚙️ שלב 3 — עיבוד ויצוא</div>', unsafe_allow_html=True)
-            col_headers = {'album_name':'שם אלבום','artist_name':'שם אמן','track_name':'שם שיר','track_uri':'Track URI','label':'לייבל'}
-
-            if st.button("🚀 עבד וצור קובץ מאוחד", use_container_width=True):
-                with st.spinner("מעבד קבצים..."):
-                    summary_data = []
-                    dfs = []
-                    for fname, df in file_data.items():
-                        existing = [c for c in selected_cols if c in df.columns]
-                        missing  = [c for c in selected_cols if c not in df.columns]
-                        dfs.append(df[existing])
-                        summary_data.append((fname, len(df)))
-                        if missing: st.warning(f"⚠️ {fname}: עמודות חסרות — {missing}")
-                    merged      = pd.concat(dfs, ignore_index=True)
-                    today       = date.today().strftime("%Y-%m-%d")
-                    out_name    = f"MusicNet_Merged_{today}.xlsx"
-                    excel_bytes = build_excel(summary_data, merged, col_headers)
-                st.session_state["excel_result"] = {
-                    "bytes":   excel_bytes,
-                    "name":    out_name,
-                    "count":   len(merged),
-                    "cols":    len(merged.columns),
-                    "files":   len(file_data),
-                    "preview": merged.head(20).to_dict("records"),
-                }
-                write_log("יצירת קובץ ממוזג", f"{out_name} | {len(merged):,} רשומות מ-{len(file_data)} קבצים")
-
-            # ── Results panel (persists across tab switches) ──────
-            if "excel_result" in st.session_state:
-                er = st.session_state["excel_result"]
-                st.markdown(
-                    f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>'
-                    f'סה"כ רשומות: <strong>{er["count"]:,}</strong> | עמודות: <strong>{er["cols"]}</strong></div>',
+        st.markdown('<div class="section-header">📚 שלב 2 — ספריית קבצים (בחר לעיבוד)</div>',
                     unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.download_button(
-                    label="⬇️ הורד את הקובץ המאוחד",
-                    data=er["bytes"],
-                    file_name=er["name"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                ):
-                    write_log("הורדת קובץ", f"{er['name']} | {er['count']:,} רשומות")
-                with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
-                    st.dataframe(pd.DataFrame(er["preview"]), use_container_width=True, hide_index=True)
+
+        reg_rows = []
+        for fname, meta in sorted(registry.items(),
+                                   key=lambda x: x[1].get("upload_date", ""), reverse=True):
+            file_ok = os.path.exists(
+                os.path.join(UPLOADS_DIR, meta.get("safe_name", fname) + ".csv"))
+            reg_rows.append({
+                "✓":                  file_ok,
+                "📄 שם קובץ":         fname,
+                "📅 תאריך העלאה":     meta.get("upload_date", ""),
+                "👤 הועלה על ידי":    meta.get("upload_user", "—"),
+                "📊 רשומות":          meta.get("record_count", 0),
+                "💾 זמין":            "✅" if file_ok else "⚠️ לא זמין",
+            })
+
+        df_reg = pd.DataFrame(reg_rows)
+        edited = st.data_editor(
+            df_reg,
+            column_config={
+                "✓":         st.column_config.CheckboxColumn("בחר", default=True, width="small"),
+                "📊 רשומות": st.column_config.NumberColumn("📊 רשומות", format="%d"),
+                "💾 זמין":   st.column_config.TextColumn("💾", width="small"),
+            },
+            disabled=["📄 שם קובץ", "📅 תאריך העלאה", "👤 הועלה על ידי", "📊 רשומות", "💾 זמין"],
+            hide_index=True,
+            use_container_width=True,
+            key="file_selector",
+        )
+
+        selected_names = edited[edited["✓"]]["📄 שם קובץ"].tolist()
+
+        if not selected_names:
+            st.warning("⚠️ יש לבחור לפחות קובץ אחד.")
         else:
-            st.warning("⚠️ יש לבחור לפחות עמודה אחת.")
+            # Load selected files from library
+            file_data   = {}
+            all_columns = set()
+            unavailable = []
+            for fname in selected_names:
+                df = load_from_library(fname, registry)
+                if df is not None:
+                    file_data[fname] = df
+                    all_columns.update(df.columns.tolist())
+                else:
+                    unavailable.append(fname)
+
+            if unavailable:
+                st.warning(f"⚠️ {len(unavailable)} קבצים לא נמצאו (האפליקציה הופעלה מחדש): "
+                           + ", ".join(unavailable))
+
+            if file_data:
+                all_columns = sorted(all_columns)
+                total_recs  = sum(len(d) for d in file_data.values())
+                c1, c2, c3  = st.columns(3)
+                with c1: st.markdown(f'<div class="metric-card"><div class="num">{len(file_data)}</div><div class="lbl">קבצים נבחרו</div></div>', unsafe_allow_html=True)
+                with c2: st.markdown(f'<div class="metric-card"><div class="num">{total_recs:,}</div><div class="lbl">רשומות סה"כ</div></div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="metric-card"><div class="num">{len(all_columns)}</div><div class="lbl">עמודות נמצאו</div></div>', unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── Step 3: Column selection ──────────────────
+                st.markdown('<div class="section-header">🔧 שלב 3 — בחירת עמודות לשמור</div>',
+                            unsafe_allow_html=True)
+                default_cols  = [c for c in ['album_name','artist_name','track_name','track_uri','label']
+                                 if c in all_columns]
+                selected_cols = st.multiselect("בחר את העמודות שברצונך לשמור:",
+                                               options=all_columns, default=default_cols)
+
+                if selected_cols:
+                    # ── Step 4: Process ───────────────────────
+                    st.markdown('<div class="section-header">⚙️ שלב 4 — עיבוד ויצוא</div>',
+                                unsafe_allow_html=True)
+                    col_headers = {'album_name':'שם אלבום','artist_name':'שם אמן',
+                                   'track_name':'שם שיר','track_uri':'Track URI','label':'לייבל'}
+
+                    if st.button("🚀 עבד וצור קובץ מאוחד", use_container_width=True):
+                        with st.spinner("מעבד קבצים..."):
+                            summary_data = []
+                            dfs = []
+                            for fname, df in file_data.items():
+                                existing = [c for c in selected_cols if c in df.columns]
+                                missing  = [c for c in selected_cols if c not in df.columns]
+                                dfs.append(df[existing])
+                                summary_data.append((fname, len(df)))
+                                if missing: st.warning(f"⚠️ {fname}: עמודות חסרות — {missing}")
+                            merged      = pd.concat(dfs, ignore_index=True)
+                            today       = date.today().strftime("%Y-%m-%d")
+                            out_name    = f"MusicNet_Merged_{today}.xlsx"
+                            excel_bytes = build_excel(summary_data, merged, col_headers)
+                        st.session_state["excel_result"] = {
+                            "bytes":   excel_bytes,
+                            "name":    out_name,
+                            "count":   len(merged),
+                            "cols":    len(merged.columns),
+                            "files":   len(file_data),
+                            "preview": merged.head(20).to_dict("records"),
+                        }
+                        write_log("יצירת קובץ ממוזג",
+                                  f"{out_name} | {len(merged):,} רשומות מ-{len(file_data)} קבצים")
+
+                    # ── Results panel (persists across tab switches) ──
+                    if "excel_result" in st.session_state:
+                        er = st.session_state["excel_result"]
+                        st.markdown(
+                            f'<div class="success-box">✅ הקובץ המאוחד נוצר בהצלחה!<br>'
+                            f'סה"כ רשומות: <strong>{er["count"]:,}</strong> | '
+                            f'עמודות: <strong>{er["cols"]}</strong></div>',
+                            unsafe_allow_html=True)
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.download_button(
+                            label="⬇️ הורד את הקובץ המאוחד",
+                            data=er["bytes"],
+                            file_name=er["name"],
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        ):
+                            write_log("הורדת קובץ",
+                                      f"{er['name']} | {er['count']:,} רשומות")
+                        with st.expander("📊 תצוגה מקדימה — 20 שורות ראשונות"):
+                            st.dataframe(pd.DataFrame(er["preview"]),
+                                         use_container_width=True, hide_index=True)
+                else:
+                    st.warning("⚠️ יש לבחור לפחות עמודה אחת.")
