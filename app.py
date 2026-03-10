@@ -122,25 +122,36 @@ authenticator = stauth.Authenticate(
     config["cookie"]["expiry_days"],
 )
 
-# ── Helper: read logs from GitHub ────────────────────────────
+# ── Helper: read logs ────────────────────────────────────────
 def read_logs():
+    # Try GitHub first
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
-        if not token:
-            return []
-        url     = f"https://api.github.com/repos/{repo}/contents/logs.json"
-        headers = {"Authorization": f"token {token}"}
-        r       = requests.get(url, headers=headers)
-        if r.status_code == 200:
-            content = base64.b64decode(r.json()["content"]).decode()
-            return json.loads(content)
+        if token:
+            url = f"https://api.github.com/repos/{repo}/contents/logs.json"
+            r   = requests.get(url, headers={"Authorization": f"token {token}"})
+            if r.status_code == 200:
+                return json.loads(base64.b64decode(r.json()["content"]).decode())
     except Exception:
         pass
-    return []
+    # Fallback: session state logs (current session only)
+    return st.session_state.get("session_logs", [])
 
-# ── Helper: write log entry to GitHub ────────────────────────
+# ── Helper: write log entry ──────────────────────────────────
 def write_log(action, details, user=None):
+    entry = {
+        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "user":      user or st.session_state.get("username", "—"),
+        "action":    action,
+        "details":   details
+    }
+    # Always save to session state (works without token)
+    if "session_logs" not in st.session_state:
+        st.session_state["session_logs"] = []
+    st.session_state["session_logs"].insert(0, entry)
+
+    # Also try to persist to GitHub
     try:
         token = st.secrets.get("GITHUB_TOKEN", "")
         repo  = st.secrets.get("GITHUB_REPO", "gil-hue/musicnet-merger")
@@ -151,21 +162,12 @@ def write_log(action, details, user=None):
         r       = requests.get(url, headers=headers)
         if r.status_code != 200:
             return
-        sha      = r.json()["sha"]
-        logs     = json.loads(base64.b64decode(r.json()["content"]).decode())
-        logs.insert(0, {
-            "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "user":      user or st.session_state.get("username", "—"),
-            "action":    action,
-            "details":   details
-        })
-        logs = logs[:500]  # keep last 500 entries
+        sha  = r.json()["sha"]
+        logs = json.loads(base64.b64decode(r.json()["content"]).decode())
+        logs.insert(0, entry)
+        logs = logs[:500]
         content = base64.b64encode(json.dumps(logs, ensure_ascii=False, indent=2).encode()).decode()
-        requests.put(url, headers=headers, json={
-            "message": f"Log: {action}",
-            "content": content,
-            "sha":     sha
-        })
+        requests.put(url, headers=headers, json={"message": f"Log: {action}", "content": content, "sha": sha})
     except Exception:
         pass
 
@@ -488,9 +490,9 @@ with tab_main:
     st.markdown('<div class="section-header">📂 שלב 1 — העלאת קבצים</div>', unsafe_allow_html=True)
     uploaded = st.file_uploader("גרור קבצי Excel לכאן", type=["xlsx","xls"],
                                  accept_multiple_files=True, label_visibility="collapsed")
-    if not uploaded:
-        st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
-    else:
+
+    # Save to session_state when files are uploaded
+    if uploaded:
         file_data   = {}
         all_columns = set()
         for f in uploaded:
@@ -500,11 +502,21 @@ with tab_main:
                 all_columns.update(df.columns.tolist())
             except Exception as e:
                 st.error(f"שגיאה בקריאת {f.name}: {e}")
-        if file_data and not st.session_state.get(f"logged_upload_{list(file_data.keys())}"):
+        st.session_state["file_data"]   = file_data
+        st.session_state["all_columns"] = sorted(all_columns)
+        log_key = f"logged_upload_{sorted(file_data.keys())}"
+        if file_data and not st.session_state.get(log_key):
             total_rows = sum(len(d) for d in file_data.values())
             write_log("העלאת קבצים", f"{len(file_data)} קבצים | {total_rows:,} רשומות: {', '.join(file_data.keys())}")
-            st.session_state[f"logged_upload_{list(file_data.keys())}"] = True
-        all_columns = sorted(all_columns)
+            st.session_state[log_key] = True
+
+    # Load from session_state (persists across tab switches)
+    file_data   = st.session_state.get("file_data",   {})
+    all_columns = st.session_state.get("all_columns", [])
+
+    if not file_data:
+        st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
+    else:
 
         total_recs = sum(len(d) for d in file_data.values())
         c1, c2, c3 = st.columns(3)
