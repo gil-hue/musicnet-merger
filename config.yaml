@@ -1,14 +1,14 @@
 credentials:
   usernames:
-    admin:
+    "gil@zed66.com":
       email: gil@zed66.com
-      name: Admin
-      password: "$2b$12$Z0AFg21J8Mb.AAuAEXFi/u2GEPcJKdgE8rWD91C0fY21lvEKaSwpC"
+      name: Gil Admin
+      password: "$2b$12$MqZv7SeZj37E9gAqW3q49eOhWU85HxGr3YBhF3EEFdqV4o2rQiBR2"
       role: admin
-    user1:
+    "gil@greenseo.co.il":
       email: gil@greenseo.co.il
-      name: User
-      password: "$2b$12$NWm.mPoKtY5HA9uXkUvWi.f87NoNQapjkCOnFchCWxbAqUxsyJpq2"
+      name: Gil User
+      password: "$2b$12$3xbpHiaFweRaA0JEy.reQeWCLjvtrDubUWPuqyzQdYoLCAqPhAEe."
       role: user
 
 cookie:
