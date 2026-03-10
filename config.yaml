@@ -1,0 +1,20 @@
+credentials:
+  usernames:
+    admin:
+      email: gil@zed66.com
+      name: Admin
+      password: "$2b$12$Z0AFg21J8Mb.AAuAEXFi/u2GEPcJKdgE8rWD91C0fY21lvEKaSwpC"
+      role: admin
+    user1:
+      email: gil@greenseo.co.il
+      name: User
+      password: "$2b$12$NWm.mPoKtY5HA9uXkUvWi.f87NoNQapjkCOnFchCWxbAqUxsyJpq2"
+      role: user
+
+cookie:
+  expiry_days: 7
+  key: musicnet_secret_key_2026
+  name: musicnet_auth
+
+pre-authorized:
+  emails: []

@@ -2,10 +2,13 @@ import streamlit as st
 import pandas as pd
 import os
 import io
+import yaml
 from datetime import date
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import streamlit_authenticator as stauth
+from yaml.loader import SafeLoader
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -13,6 +16,31 @@ st.set_page_config(
     page_icon="🎵",
     layout="wide"
 )
+
+# ── Authentication ────────────────────────────────────────────
+with open("config.yaml") as f:
+    config = yaml.load(f, Loader=SafeLoader)
+
+authenticator = stauth.Authenticate(
+    config["credentials"],
+    config["cookie"]["name"],
+    config["cookie"]["key"],
+    config["cookie"]["expiry_days"],
+)
+
+authenticator.login(location="main")
+
+if st.session_state.get("authentication_status") is False:
+    st.error("שם משתמש או סיסמה שגויים")
+    st.stop()
+elif st.session_state.get("authentication_status") is None:
+    st.warning("אנא הכנס שם משתמש וסיסמה")
+    st.stop()
+
+# ── Logged in ─────────────────────────────────────────────────
+col_user, col_logout = st.columns([8, 1])
+with col_logout:
+    authenticator.logout("התנתק")
 
 # ── CSS ──────────────────────────────────────────────────────
 st.markdown("""
