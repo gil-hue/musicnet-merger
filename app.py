@@ -643,13 +643,13 @@ with tab_main:
             st.session_state.pop("excel_result", None)   # clear stale result
             st.success(f"✅ {len(newly_saved)} קבצים נשמרו לספרייה")
 
-    # ── Step 2: File library with checkboxes ─────────────────
+    # ── Step 2: File library with pagination ─────────────────
     registry = load_registry()
 
     if not registry:
         st.info("⬆️ העלה לפחות קובץ Excel אחד כדי להמשיך.")
     else:
-        st.markdown('<div class="section-header">📚 שלב 2 — ספריית קבצים (בחר לעיבוד)</div>',
+        st.markdown('<div class="section-header">📚 שלב 2 — ספריית קבצים</div>',
                     unsafe_allow_html=True)
 
         reg_rows = []
@@ -658,29 +658,68 @@ with tab_main:
             file_ok = os.path.exists(
                 os.path.join(UPLOADS_DIR, meta.get("safe_name", fname) + ".csv"))
             reg_rows.append({
-                "✓":                  file_ok,
-                "📄 שם קובץ":         fname,
-                "📅 תאריך העלאה":     meta.get("upload_date", ""),
-                "👤 הועלה על ידי":    meta.get("upload_user", "—"),
-                "📊 רשומות":          meta.get("record_count", 0),
-                "💾 זמין":            "✅" if file_ok else "⚠️ לא זמין",
+                "📄 שם קובץ":       fname,
+                "📅 תאריך העלאה":   meta.get("upload_date", ""),
+                "👤 הועלה על ידי":  meta.get("upload_user", "—"),
+                "📊 רשומות":        meta.get("record_count", 0),
+                "💾":               "✅" if file_ok else "⚠️ לא זמין",
             })
 
         df_reg = pd.DataFrame(reg_rows)
-        edited = st.data_editor(
-            df_reg,
-            column_config={
-                "✓":         st.column_config.CheckboxColumn("בחר", default=True, width="small"),
-                "📊 רשומות": st.column_config.NumberColumn("📊 רשומות", format="%d"),
-                "💾 זמין":   st.column_config.TextColumn("💾", width="small"),
-            },
-            disabled=["📄 שם קובץ", "📅 תאריך העלאה", "👤 הועלה על ידי", "📊 רשומות", "💾 זמין"],
-            hide_index=True,
-            use_container_width=True,
-            key="file_selector",
-        )
 
-        selected_names = edited[edited["✓"]]["📄 שם קובץ"].tolist()
+        # ── Paginate library table ────────────────────────────
+        LIB_PER_PAGE = 20
+        total_lib_pages = max(1, (len(df_reg) + LIB_PER_PAGE - 1) // LIB_PER_PAGE)
+        if "lib_page" not in st.session_state:
+            st.session_state["lib_page"] = 0
+        lib_page = min(st.session_state["lib_page"], total_lib_pages - 1)
+        st.session_state["lib_page"] = lib_page
+        lib_start   = lib_page * LIB_PER_PAGE
+        df_lib_page = df_reg.iloc[lib_start : lib_start + LIB_PER_PAGE]
+
+        st.dataframe(df_lib_page, use_container_width=True, hide_index=True,
+                     column_config={
+                         "📊 רשומות": st.column_config.NumberColumn(format="%d"),
+                         "💾":        st.column_config.TextColumn("💾", width="small"),
+                     })
+        st.caption(f"סה\"כ: {len(df_reg)} קבצים | עמוד {lib_page + 1} מתוך {total_lib_pages}")
+
+        if total_lib_pages > 1:
+            half    = 2
+            p_start = max(0, lib_page - half)
+            p_end   = min(total_lib_pages, p_start + 5)
+            if p_end - p_start < 5:
+                p_start = max(0, p_end - 5)
+            lib_range = list(range(p_start, p_end))
+            lcols = st.columns([0.5] + [0.3] * len(lib_range) + [0.5], gap="small")
+            with lcols[0]:
+                if st.button("‹", key="lib_prev",
+                             disabled=(lib_page == 0), type="secondary"):
+                    st.session_state["lib_page"] = lib_page - 1
+                    st.rerun()
+            for i, lp in enumerate(lib_range):
+                with lcols[i + 1]:
+                    b_type = "primary" if lp == lib_page else "secondary"
+                    if st.button(str(lp + 1), key=f"lib_pg_{lp}", type=b_type):
+                        st.session_state["lib_page"] = lp
+                        st.rerun()
+            with lcols[-1]:
+                if st.button("›", key="lib_next",
+                             disabled=(lib_page == total_lib_pages - 1), type="secondary"):
+                    st.session_state["lib_page"] = lib_page + 1
+                    st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── File selection multiselect ────────────────────────
+        available_files = [r["📄 שם קובץ"] for r in reg_rows if r["💾"] == "✅"]
+        all_file_names  = [r["📄 שם קובץ"] for r in reg_rows]
+        selected_names  = st.multiselect(
+            "🗂️ בחר קבצים לעיבוד:",
+            options=all_file_names,
+            default=available_files,
+            format_func=lambda f: f"{f}  [{registry[f].get('upload_date', '')}]",
+        )
 
         if not selected_names:
             st.warning("⚠️ יש לבחור לפחות קובץ אחד.")
